@@ -1,0 +1,136 @@
+---
+title: "Practical Machine Learning Prediction Assignment Writeup"
+author: "Evgeniya Yakovleva"
+date: "23.05.2015"
+output: html_document
+---
+
+#Overview
+
+This is final project report for Coursera course "Practical Machine Learning". The goal of this project is to predict the manner in which people did the exercise.  The training data for this project are available here:  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv. The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+```{r, message=FALSE}
+# provides reproducibility
+# loading packages and set seed
+library(caret)
+library(Hmisc)
+library(doMC)
+set.seed(42)
+```
+#Data spliting
+Raw data contains a lot of missing values and "#DIV/0!". This could be easily determined by `summary()` or `Hmisc::descrive()` function. Therefore we will define parameter na.strings for `read.csv()` function.
+```{r}
+trainSet <- read.csv("pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+assignmentTest <-read.csv("pml-testing.csv", na.strings = c("NA", "", "#DIV/0!"))
+```
+Convert `classe` into a factor.
+```{r}
+trainSet$classe <-factor(trainSet$classe)
+``` 
+Split train set into 60% training and 40% testing sets.
+```{r}
+inTraining <- createDataPartition(trainSet$classe, p=0.60, list=FALSE)
+modelTrainSet <- trainSet[inTraining,]
+modelTestSet <- trainSet[-inTraining,]
+```
+
+#Feature selection
+
+Diagnoses weak features. To avoid increasing the length of report all outputs will be suppressed.
+```{r}
+# get weak features indexes
+nearZeroVariables <- nearZeroVar(modelTrainSet, saveMetrics = TRUE)
+# getting number of weak features
+length(nearZeroVar(modelTrainSet))
+```
+
+Remove weak features and the variables which doesnt have importance in the analysis (first columns) and with over then 90% missing values.
+```{r}
+processedTrainSet <- modelTrainSet[, !nearZeroVariables$nzv]
+processedTrainSet <- processedTrainSet[, -c(1:6)]
+misingValues <-  sapply(colnames(processedTrainSet), function(x) if(sum(is.na(processedTrainSet[, x])) >= 0.9*nrow(processedTrainSet)){return (TRUE)}else{return (FALSE)})
+processedTrainSet <- processedTrainSet[, !misingValues]
+dim(processedTrainSet)
+colnames(processedTrainSet)
+```
+Select appropriate columns from test set and predefined final  test set
+```{r}
+colNames <- colnames(processedTrainSet)
+processedTestSet <- modelTestSet[,colNames]
+dim(modelTestSet)
+dim(processedTestSet)
+
+# there is no classe column in test data
+colNames <- colNames[-length(colNames)]
+processedAssignmentTest <- assignmentTest[, colNames]
+dim(assignmentTest)
+dim(processedAssignmentTest)
+```
+
+Preproccesing features by centrering and scaling.
+
+```{r}
+# generate transformation from training set
+transformation <- preProcess(processedTrainSet[, colNames])
+trainFeatureCS <- predict(transformation, processedTrainSet[, colNames])
+processedTrainSet <- data.frame(trainFeatureCS, classe = processedTrainSet$classe)
+# apply to test set
+testFeatureCS <-  predict(transformation, processedTestSet[, colNames])
+processedTestSet <- data.frame(testFeatureCS, classe = processedTestSet$classe)
+# apply to assignment test
+processedAssignmentTest <-predict(transformation, processedAssignmentTest)
+```
+
+#Model training
+
+I select as model - randomForest. The reasons are follow: 
+
+* it is unexcelled in accuracy among current algorithms, 
+* it can handle thousands of input variables without variable deletion,
+* it runs efficiently on large data bases. 
+
+The error will be estimated using 40% test samples. I expect out of sample error less then 5%.
+
+```{r}
+# parallel processing
+registerDoMC(cores = 24)
+trainCntr <- trainControl(classProbs=TRUE,
+                     savePredictions=TRUE,
+                     allowParallel=TRUE)
+
+system.time(trainingModel <- train(classe ~ ., data=processedTrainSet, method= "rf", trControl= trainCntr, ntree=60 ))
+```
+# Estimate model on test set
+```{r}
+testPrediction <- predict(trainingModel, processedTestSet)
+confusionMatrix(testPrediction, processedTestSet$classe)
+outOfSampleError.accuracy <- sum(testPrediction == processedTestSet$classe)/length(testPrediction)
+outOfSampleError.accuracy
+outOfSampleError <- 1 - outOfSampleError.accuracy
+outOfSampleError
+```
+As we can see the outOfSampleError less than 1%.
+
+# Apply model for assignmnt test set
+
+```{r}
+testAssignmentPrediction <- predict(trainingModel, processedAssignmentTest)
+testAssignmentPrediction
+```
+
+Write up results
+
+```{r}
+pml_write_files = function(x) {
+    n = length(x)
+    for (i in 1:n) {
+        filename = paste0("problem_id_", i, ".txt")
+        write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, 
+            col.names = FALSE)
+    }
+}
+pml_write_files(testAssignmentPrediction)
+```
+
+
+
